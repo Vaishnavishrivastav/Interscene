@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Interview Buddy</title>
+<style>
+  :root { --bg:#14121f; --card:#1e1b2e; --ink:#f1eefc; --mute:#9a95b8; --acc:#a78bfa; --good:#6ee7b7; --warn:#fcd34d; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.55 system-ui,sans-serif; }
+  main { max-width:760px; margin:0 auto; padding:24px 16px 80px; }
+  h1 { margin:0 0 4px; font-size:28px; }
+  .sub { color:var(--mute); margin:0 0 20px; }
+  .card { background:var(--card); border-radius:14px; padding:18px; margin-bottom:14px; }
+  label { display:block; font-size:13px; color:var(--mute); margin:12px 0 4px; }
+  input, select, textarea { width:100%; padding:10px 12px; border-radius:10px; border:1px solid #38335a;
+    background:#15132a; color:var(--ink); font:inherit; }
+  textarea { min-height:120px; resize:vertical; }
+  button { background:var(--acc); color:#17122b; border:0; border-radius:10px; padding:10px 18px;
+    font:600 15px inherit; cursor:pointer; margin-top:14px; }
+  button:disabled { opacity:.5; cursor:wait; }
+  .row { display:flex; gap:12px; } .row > div { flex:1; }
+  .q { border-left:4px solid var(--acc); }
+  .qlabel { font-size:12px; color:var(--mute); text-transform:uppercase; letter-spacing:.08em; }
+  .you { border-left:4px solid #475569; white-space:pre-wrap; }
+  .fb { border-left:4px solid var(--good); }
+  .score { font-size:28px; font-weight:700; color:var(--good); }
+  .tag { font-size:12px; font-weight:700; color:var(--mute); text-transform:uppercase; margin-top:10px; }
+  .report { border-left:4px solid var(--warn); }
+  .err { color:#fca5a5; }
+  .hidden { display:none; }
+  .progress { height:6px; background:#2a2645; border-radius:3px; overflow:hidden; margin-bottom:14px; }
+  .bar { height:100%; background:var(--acc); width:0; transition:width .3s; }
+  #status { color:var(--mute); font-size:13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Interview Buddy</h1>
+  <p class="sub">A patient mock interviewer that runs on this laptop. Nothing you say leaves it.</p>
+  <p id="status"></p>
+
+  <section id="setup" class="card">
+    <label>Role you are preparing for</label>
+    <input id="role" value="Software Engineer (fresher)">
+    <div class="row">
+      <div>
+        <label>Round</label>
+        <select id="round">
+          <option value="mixed">Mixed (HR + technical)</option>
+          <option value="hr">HR / behavioural</option>
+          <option value="technical">Technical</option>
+        </select>
+      </div>
+      <div>
+        <label>Number of questions</label>
+        <select id="total"><option>3</option><option selected>5</option><option>7</option></select>
+      </div>
+    </div>
+    <button id="startBtn">Start interview</button>
+  </section>
+
+  <section id="session" class="hidden">
+    <div class="progress"><div class="bar" id="bar"></div></div>
+    <div id="log"></div>
+    <div id="answerBox" class="card hidden">
+      <label>Your answer (take your time, answer like it's the real thing)</label>
+      <textarea id="answer"></textarea>
+      <button id="sendBtn">Submit answer</button>
+    </div>
+    <div id="busy" class="card hidden">Gemma is thinking...</div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const state = { role:"", round:"mixed", total:5, n:1, history:[], scores:[] };
+
+function esc(s){ return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+// Pull "LABEL: text" sections out of the model's reply, tolerant of small-model messiness.
+function parse(text, labels){
+  const out = {};
+  labels.forEach((label, i) => {
+    const rest = labels.slice(i+1).map(l => l.replace(/ /g,'\\s')).join('|');
+    const re = new RegExp(label.replace(/ /g,'\\s') + '\\s*:?\\**\\s*([\\s\\S]*?)' + (rest ? '(?=\\n\\**\\s*(?:' + rest + ')\\s*:|$)' : '$'), 'i');
+    const m = text.replace(/\*\*/g,'').match(re);
+    if (m) out[label] = m[1].trim();
+  });
+  return out;
+}
+
+async function api(body){
+  const r = await fetch('/api/turn', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ role:state.role, round:state.round, total:state.total, n:state.n, ...body }) });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || 'Request failed');
+  return j.reply;
+}
+
+function busy(on){ $('busy').classList.toggle('hidden', !on); $('answerBox').classList.toggle('hidden', on); }
+function add(html, cls){ const d = document.createElement('div'); d.className = 'card ' + cls; d.innerHTML = html; $('log').appendChild(d); d.scrollIntoView({behavior:'smooth', block:'end'}); }
+function setBar(){ $('bar').style.width = Math.round(((state.n-1)/state.total)*100) + '%'; }
+
+function showQuestion(question){
+  state.history.push({ role:'assistant', content: 'Question ' + state.n + ': ' + question });
+  add('<div class="qlabel">Question ' + state.n + ' of ' + state.total + '</div>' + esc(question), 'q');
+  busy(false); $('answer').value = ''; $('answer').focus();
+}
+
+async function start(){
+  state.role = $('role').value; state.round = $('round').value; state.total = +$('total').value;
+  $('setup').classList.add('hidden'); $('session').classList.remove('hidden'); busy(true);
+  try {
+    const reply = await api({ mode:'start', history:[] });
+    const p = parse(reply, ['GREETING','NEXT QUESTION']);
+    if (p['GREETING']) add(esc(p['GREETING']), '');
+    showQuestion(p['NEXT QUESTION'] || reply);
+  } catch(e){ add('<span class="err">' + esc(e.message) + '</span>', ''); }
+}
+
+async function submitAnswer(){
+  const ans = $('answer').value.trim(); if (!ans) return;
+  add(esc(ans), 'you');
+  state.history.push({ role:'user', content: ans });
+  busy(true);
+  try {
+    const reply = await api({ mode:'answer', history: state.history });
+    const p = parse(reply, ['SCORE','WORKED','IMPROVE','STRONGER','NEXT QUESTION']);
+    const score = parseInt((p['SCORE']||'').match(/\d+/)?.[0] || '0');
+    state.scores.push(score);
+    state.history.push({ role:'assistant', content: 'Feedback: ' + [p['WORKED'],p['IMPROVE']].filter(Boolean).join(' ') });
+    add('<div class="score">' + (score||'?') + '/10</div>'
+      + '<div class="tag">What worked</div>' + esc(p['WORKED']||'')
+      + '<div class="tag">Improve</div>' + esc(p['IMPROVE']||'')
+      + '<div class="tag">A stronger version</div>' + esc(p['STRONGER']||reply), 'fb');
+    if (state.n >= state.total) { await finish(); return; }
+    state.n++; setBar();
+    showQuestion(p['NEXT QUESTION'] || 'Tell me about a project you are proud of.');
+  } catch(e){ add('<span class="err">' + esc(e.message) + '</span>', ''); busy(false); }
+}
+
+async function finish(){
+  $('bar').style.width = '100%';
+  try {
+    const reply = await api({ mode:'final', history: state.history });
+    const p = parse(reply, ['STRENGTHS','FOCUS AREAS','NEXT STEPS','ENCOURAGEMENT']);
+    const valid = state.scores.filter(s => s > 0);
+    const avg = valid.length ? (valid.reduce((a,b)=>a+b,0)/valid.length).toFixed(1) : '?';
+    add('<div class="qlabel">Final report</div><div class="score">Average: ' + avg + '/10</div>'
+      + '<div class="tag">Strengths</div>' + esc(p['STRENGTHS']||'')
+      + '<div class="tag">Focus areas</div>' + esc(p['FOCUS AREAS']||'')
+      + '<div class="tag">Next steps</div>' + esc(p['NEXT STEPS']||'')
+      + '<div class="tag"></div>' + esc(p['ENCOURAGEMENT']||reply)
+      + '<br><button onclick="location.reload()">Practise again</button>', 'report');
+    $('busy').classList.add('hidden'); $('answerBox').classList.add('hidden');
+  } catch(e){ add('<span class="err">' + esc(e.message) + '</span>', ''); }
+}
+
+$('startBtn').onclick = start;
+$('sendBtn').onclick = submitAnswer;
+
+fetch('/api/health').then(r => r.json()).then(h => {
+  $('status').textContent = h.ok ? 'Model ready: ' + h.model
+    : 'Ollama or model not found. Run: ollama pull ' + h.model;
+});
+</script>
+</body>
+</html>
