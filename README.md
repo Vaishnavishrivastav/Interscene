@@ -6,7 +6,7 @@ A mock interview partner for campus placements. It asks one question at a time, 
 
 1. Install [Ollama](https://ollama.com) and pull a Gemma model:
    ```
-   ollama pull gemma3:4b
+   ollama pull gemma3:1b
    ```
 2. Install and start the app:
    ```
@@ -22,6 +22,7 @@ OLLAMA_MODEL=gemma3:12b python app.py
 ```
 
 Any model Ollama can serve works. Smaller models are faster on weak laptops, bigger ones give better feedback.
+On laptops with more RAM, try OLLAMA_MODEL=gemma3:4b for better feedback.
 
 ## How it works
 
